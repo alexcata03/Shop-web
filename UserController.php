@@ -5,331 +5,281 @@ namespace App\Controllers;
 
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
+use Slim\Views\Twig;
 use PDO;
-use Lcobucci\JWT\Builder;
-use Lcobucci\JWT\Signer\Hmac\Sha256;
-use Lcobucci\JWT\Parser;
-use Lcobucci\JWT\Signer\Key;
-use DateTimeImmutable;
+use \Firebase\JWT\JWT;
 
 class UserController
 {
     private PDO $db;
-    private string $jwtSecret;
+    private Twig $view;
+    private string $secretKey = 'your_secret_key';
 
-    public function __construct(PDO $db)
+    public function __construct(PDO $db, Twig $view)
     {
         $this->db = $db;
-        $this->jwtSecret = bin2hex(random_bytes(32)); // Generate random JWT secret key
+        $this->view = $view;
     }
     
-    // Method to generate JWT token
-    private function generateToken($userId)
-    {
-        // Create signer
-        $signer = new Sha256();
-    
-        // Generate key from secret
-        $key = new Key($this->jwtSecret);
-    
-        // Create token builder
-        $token = (new Builder())
-            ->issuedBy('http://localhost:5173/') // Configures the issuer (your Vite server URL)
-            ->permittedFor('http://localhost:8000') // Configures the audience (your PHP server URL)
-            ->issuedAt(new DateTimeImmutable()) // Configures the time that the token was issued
-            ->expiresAt((new DateTimeImmutable())->modify('+14 hour'))
-            ->withClaim('userId', $userId) // Configures a new claim, called "userId"
-            ->getToken($signer, $key); // Retrieves the generated token
-    
-        return $token;
-    }
+    // Generate JWT token
+    private function generateJWT($userId, $username)
+{
+    $payload = [
+        'user_id' => $userId,
+        'username' => $username,
+        'exp' => time() + (14 * 24 * 60 * 60) // Token expiration time (14 days)
+    ];
+    $jwt = JWT::encode($payload, $this->secretKey, 'HS256');
+    return $jwt;
+}
 
-    //Method to get user id from token
-    private function getUserIdFromToken(string $token): ?int
-    {
-        try {
-            // Decode the JWT token payload
-            $tokenParts = explode('.', $token);
-            $payload = base64_decode($tokenParts[1]);
-            $decodedPayload = json_decode($payload, true);
+ /// Login
+public function login(Request $request, Response $response, $args)
+{
+    // Retrieve email and password from the request
+    $loginData = $request->getParsedBody();
+    $email = isset($loginData['email']) ? $loginData['email'] : null;
+    $password = isset($loginData['password']) ? $loginData['password'] : null;
 
-            // Retrieve the user ID from the decoded payload
-            $userId = $decodedPayload['userId'] ?? null;
-
-            return $userId;
-        } catch (\Throwable $e) {
-            // Log or handle the error if decoding fails
-            error_log('Error decoding JWT token payload: ' . $e->getMessage());
-            return null;
-        }
-    }
-
-
-    // Login
-    public function login(Request $request, Response $response, $args): Response
-    {
-        // Retrieve username and password from the request
-        $loginData = $request->getParsedBody();
-        $username = $loginData['username'] ?? null;
-        $password = $loginData['password'] ?? null;
-
-        // Check if both username and password are provided
-        if (!$username || !$password) {
-            error_log('Error: Username and password are required');
-            $response->getBody()->write(json_encode([
-                'error' => 'Username and password are required',
-                'username' => $username,
-                'password' => $password
-            ]));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
-        }
-
-        // Perform database query to fetch user data based on username
-        $stmt = $this->db->prepare('SELECT * FROM users WHERE username = ? LIMIT 1');
-        $stmt->execute([$username]);
-        $user = $stmt->fetch();
-
-        // Check if user exists
-        if (!$user) {
-            error_log('Error: Invalid username');
-            $response->getBody()->write(json_encode([
-                'error' => 'Invalid username',
-                'username' => $username,
-                'password' => $password
-            ]));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
-        }
-
-        // Get the hashed password from the database
-        $passwordFromDb = $user['password'];
-        // Manually verify the password
-        if ($password !== $passwordFromDb) {
-            // Passwords don't match, render error message
-            error_log('Error: Invalid password');
-            $response->getBody()->write(json_encode([
-                'error' => 'Invalid password',
-                'username' => $username,
-                'password' => $password
-            ]));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
-        }
-
-        // Passwords match, proceed with login
-        // Generate JWT token
-        $token = $this->generateToken($user['id']);
-
-        // Return success message along with the JWT token
+    // Check if both email and password are provided
+    if (!$email || !$password) {
+        error_log('Error: Email and password are required');
         $response->getBody()->write(json_encode([
-            'message' => 'Login successful',
-            'userId' => $user['id'],
-            'username' => $username,
-            'token' => (string) $token // Convert token object to string
+            'error' => 'Email and password are required',
+            'email' => $email,
+            'password' => $password
         ]));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
-    }
-    // Method for user registration
-    public function createUser(Request $request, Response $response, $args): Response
-    {
-        $registerData = $request->getParsedBody();
-
-        // Extract registration data
-        $username = $registerData['username'];
-        $email = $registerData['email'];
-        $password = $registerData['password'];
-        $phone = $registerData['phone'];
-        $address = $registerData['address'];
-        $firstName = $registerData['firstName'];
-        $lastName = $registerData['lastName'];
-
-        // Check if username already exists
-        $stmt = $this->db->prepare('SELECT COUNT(*) AS count FROM users WHERE username = ?');
-        $stmt->execute([$username]);
-        $resultUsername = $stmt->fetch();
-
-        // Check if email already exists
-        $stmt = $this->db->prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?');
-        $stmt->execute([$email]);
-        $resultEmail = $stmt->fetch();
-
-        if ($resultUsername['count'] > 0) {
-            // Username already exists, return an error
-            $response->getBody()->write(json_encode(['error' => 'Username already exists in the database']));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
-        }
-
-        if ($resultEmail['count'] > 0) {
-            // Email already exists, return an error
-            $response->getBody()->write(json_encode(['error' => 'Email already exists in the database']));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
-        }
-
-        // If no errors, proceed with creating the user
-        // Prepare and execute the SQL query to insert the new user
-        $stmt = $this->db->prepare('INSERT INTO users (username, email, password, phone, address, userStatus, firstName, lastName) VALUES (?, ?, ?, ?, ?, 1, ?, ?)');
-        $stmt->execute([$username, $email, $password, $phone, $address, $firstName, $lastName]);
-
-       // Get the user ID of the newly created user
-       $userId = $this->db->lastInsertId();
-       // Generate JWT token
-       $token = $this->generateToken($userId);
-
-       // Return success message along with the JWT token
-       $response->getBody()->write(json_encode([
-           'message' => 'User registered successfully',
-           'username' => $username,
-           'email' => $email,
-           'phone' => $phone,
-           'address' => $address,
-           'userStatus' => 1, // Set userStatus to 1 by default
-           'firstName' => $firstName,
-           'lastName' => $lastName,
-           'userId' => $userId, // Pass the user ID to the response
-           'token' => (string) $token // Convert token object to string
-       ]));
-       return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+        return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
     }
 
-    // Logout
-    public function logout(Request $request, Response $response, $args): Response
-    {
-        // Return logout success message
-        $response->getBody()->write(json_encode(['message' => 'Logged out successfully']));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+    // Perform database query to fetch user data based on email
+    $stmt = $this->db->prepare('SELECT * FROM users WHERE email = ? LIMIT 1');
+    $stmt->execute([$email]);
+    $user = $stmt->fetch();
+
+    // Check if user exists
+    if (!$user) {
+        error_log('Error: Invalid email');
+        $response->getBody()->write(json_encode([
+            'error' => 'Invalid email',
+            'email' => $email,
+            'password' => $password
+        ]));
+        return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
     }
 
-    // Method to get all users
-    public function getAll(Request $request, Response $response, $args): Response
-    {
-        // Extract token from Authorization header
-        $token = $request->getHeaderLine('Authorization');
+    // Get the hashed password from the database
+    $passwordFromDb = $user['password'];
+    // Manually verify the password
+    if ($password !== $passwordFromDb) {
+        // Passwords don't match, render error message
+        error_log('Error: Invalid password');
+        $response->getBody()->write(json_encode([
+            'error' => 'Invalid password',
+            'email' => $email,
+            'password' => $password
+        ]));
+        return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
+    }
 
-        // Validate and extract user ID from token
-        $userId = $this->getUserIdFromToken($token);
+    // Generate JWT token
+    $token = $this->generateJWT($user['id'], $user['email']);
 
-        if ($userId === null) {
-            // Token is invalid or user ID is not found, return error response
-            $response->getBody()->write(json_encode(['message' => 'Invalid token']));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
-        }
+    // Redirect to dashboard on successful login
+    $response->getBody()->write(json_encode([
+        'userId' => $user['id'], // Pass the user ID to the template
+        'email' => $email,
+        'token' => $token
+    ]));
+    return $response->withHeader('Content-Type', 'application/json');
+}
 
-        // Proceed with fetching users based on user ID
+
+// Method for user registration
+public function createUser(Request $request, Response $response, $args)
+{
+    $registerData = $request->getParsedBody();
+
+    // Extract registration data
+    $username = $registerData['username'];
+    $email = $registerData['email'];
+    $password = $registerData['password'];
+    $phone = $registerData['phone'];
+    $address = $registerData['address'];
+    $firstName = $registerData['firstName'];
+    $lastName = $registerData['lastName'];
+
+    // Check if username already exists
+    $stmt = $this->db->prepare('SELECT COUNT(*) AS count FROM users WHERE username = ?');
+    $stmt->execute([$username]);
+    $resultUsername = $stmt->fetch();
+
+    // Check if email already exists
+    $stmt = $this->db->prepare('SELECT COUNT(*) AS count FROM users WHERE email = ?');
+    $stmt->execute([$email]);
+    $resultEmail = $stmt->fetch();
+
+    if ($resultUsername['count'] > 0) {
+        // Username already exists, return an error
+        $error = 'Username already exists in the database';
+        $response->getBody()->write(json_encode(['error' => $error]));
+        return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+    }
+
+    if ($resultEmail['count'] > 0) {
+        // Email already exists, return an error
+        $error = 'Email already exists in the database';
+        $response->getBody()->write(json_encode(['error' => $error]));
+        return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+    }
+
+    // If no errors, proceed with creating the user
+
+    // Prepare and execute the SQL query to insert the new user
+    $stmt = $this->db->prepare('INSERT INTO users (username, email, password, phone, address, userStatus, firstName, lastName) VALUES (?, ?, ?, ?, ?, 1, ?, ?)');
+    $stmt->execute([$username, $email, $password, $phone, $address, $firstName, $lastName]);
+
+    // Get the user ID of the newly created user
+    $userId = $this->db->lastInsertId();
+    
+    // Generate JWT token
+    $token = $this->generateJWT($userId, $username);
+
+    // Return success response with JWT token
+    $response->getBody()->write(json_encode([
+        'message' => 'User created successfully',
+        'token' => $token
+    ]));
+    return $response->withStatus(201)->withHeader('Content-Type', 'application/json');
+}
+
+
+
+public function logout(Request $request, Response $response, $args)
+{
+    // Assuming you clear the JWT token from the client-side
+    $response->getBody()->write(json_encode([
+        'message' => 'Logged out successfully'
+    ]));
+    return $response->withHeader('Content-Type', 'application/json');
+}
+
+public function getAll(Request $request, Response $response, $args)
+{
+    // Retrieve user ID from JWT token
+    $token = $request->getAttribute('token');
+    $userId = $token['id'];
+
+    // Get the user status from the database
+    $stmt = $this->db->prepare('SELECT userStatus FROM users WHERE id = ?');
+    $stmt->execute([$userId]);
+    $userStatus = $stmt->fetchColumn();
+
+    // Check if the user has permission to view all users
+    if ($userStatus != 2) {
+        $response->getBody()->write(json_encode([
+            'error' => 'You do not have permission to view all users'
+        ]));
+        return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
+    }
+
+    // Fetch all users from the database
+    $stmt = $this->db->query('SELECT * FROM users');
+    $users = $stmt->fetchAll();
+
+    // Return the users as JSON
+    $response->getBody()->write(json_encode($users));
+    return $response->withHeader('Content-Type', 'application/json');
+}
+
+public function getUserByUsername(Request $request, Response $response, $args)
+{
+    // Retrieve user ID from JWT token if available
+    $token = $request->getAttribute('token');
+    $userId = null;
+    $userStatus = null;
+    
+    if ($token !== null && is_array($token)) {
+        $userId = $token['id'];
+
         // Get the user status from the database
         $stmt = $this->db->prepare('SELECT userStatus FROM users WHERE id = ?');
         $stmt->execute([$userId]);
         $userStatus = $stmt->fetchColumn();
+    }
 
-        // Check if the user has permission to view all users
-        if ($userStatus != 2) {
-            $response->getBody()->write(json_encode(['message' => 'You do not have permission to view all users']));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(403);
-        }
-
-        // Fetch all users from the database
-        $stmt = $this->db->query('SELECT * FROM users');
-        $users = $stmt->fetchAll();
-
-        // Encode the data to JSON
-        $responseData = json_encode(['users' => $users]);
-
-        // Set the response body and headers
-        $response->getBody()->write($responseData);
-        $response = $response->withHeader('Content-Type', 'application/json')->withStatus(200);
-
+    // Check if the user has permission to view other users
+    if ($userStatus !== 2) {
+        // Return an error response if user does not have permission
+        $responseBody = json_encode(['error' => 'You do not have permission to view other users']);
+        $response = $response->withStatus(403)->withHeader('Content-Type', 'application/json')->getBody()->write($responseBody);
         return $response;
     }
 
+    // Get the username from the URL parameters
+    $username = $args['username'];
 
-    public function getUserByUsername(Request $request, Response $response, $args): Response
-    {
-        // Extract token from Authorization header
-        $token = $request->getHeaderLine('Authorization');
+    // Prepare and execute the SQL query to select user data by username
+    $stmt = $this->db->prepare('SELECT * FROM users WHERE username = ?');
+    $stmt->execute([$username]);
+    $user = $stmt->fetch();
 
-        // Validate and extract user ID from token
-        $userId = $this->getUserIdFromToken($token);
-
-        if ($userId === null) {
-            // Token is invalid or user ID is not found, return error response
-            $response->getBody()->write(json_encode(['message' => 'Invalid token']));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
-        }
-
-        // Get the user status from the database
-        $stmt = $this->db->prepare('SELECT userStatus FROM users WHERE id =?');
-        $stmt->execute([$userId]);
-        $userStatus = $stmt->fetchColumn();
-
-        // Check if the user has permission to view other users
-        if ($userStatus != 2) {
-            $response->getBody()->write(json_encode(['message' => 'You do not have permission to view other users']));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(403);
-        }
-
-        // Get the username from the URL parameters
-        $username = $args['username'];
-
-        // Prepare and execute the SQL query to select user data by username
-        $stmt = $this->db->prepare('SELECT * FROM users WHERE username = ?');
-        $stmt->execute([$username]);
-        $user = $stmt->fetch();
-
-        // Check if user exists
-        if (!$user) {
-            // User not found, return an error message
-            $response->getBody()->write(json_encode(['message' => 'User not found']));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(404);
-        }
-
-        // User found, return the user information
-        $response->getBody()->write(json_encode(['user' => $user]));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+    // Check if user exists
+    if (!$user) {
+        // User not found, return an error message
+        $responseBody = json_encode(['error' => 'User not found']);
+        $response = $response->withStatus(404)->withHeader('Content-Type', 'application/json')->getBody()->write($responseBody);
+        return $response;
     }
 
-    // Method to update user information based on username
-   public function updateUserById(Request $request, Response $response, $args): Response
+    // Include user ID and username of the connected user in the response if available
+    if ($userId !== null) {
+        $user['connectedUserId'] = $userId;
+        $user['connectedUsername'] = $token['username'];
+    }
+
+    // User found, return the user information as JSON
+    $responseBody = json_encode($user);
+    $response = $response->withStatus(200)->withHeader('Content-Type', 'application/json')->getBody()->write($responseBody);
+    return $response;
+}
+
+
+
+
+// Method to update user information based on username
+public function updateUserById(Request $request, Response $response, $args)
 {
-    // Extract token from Authorization header
-    $token = $request->getHeaderLine('Authorization');
-
-    // Validate and extract user ID from token
-    $userId = $this->getUserIdFromToken($token);
-
-    if ($userId === null) {
-        // Token is invalid or user ID is not found, return error response
-        $response->getBody()->write(json_encode(['message' => 'Invalid token']));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(401);
-    }
+    // Retrieve user ID from JWT token
+    $token = $request->getAttribute('token');
+    $userId = $token['id'];
 
     // Get the user status from the database
-    $stmt = $this->db->prepare('SELECT userStatus FROM users WHERE id =?');
+    $stmt = $this->db->prepare('SELECT userStatus FROM users WHERE id = ?');
     $stmt->execute([$userId]);
     $userStatus = $stmt->fetchColumn();
 
     // Check if the user has permission to update other users
     if ($userStatus != 2) {
-        $response->getBody()->write(json_encode(['message' => 'You do not have permission to update other users']));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(403);
+        $response->getBody()->write(json_encode([
+            'error' => 'You do not have permission to update other users'
+        ]));
+        return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
     }
 
     // Get the user ID from the URL parameters
     $id = $args['id'];
 
     // Retrieve updated user data from the request body
-    $requestBody = $request->getBody()->getContents();
-    error_log('Request Body: ' . $requestBody);
+    $userData = $request->getParsedBody();
 
-    // Try to parse the request body manually
-    parse_str($requestBody, $parsedBody);
-    error_log('Parsed Body: ' . print_r($parsedBody, true));
-
-    // Check if $parsedBody is empty or not an array
-    if (empty($parsedBody) || !is_array($parsedBody)) {
-        error_log('Received invalid data for update: ' . print_r($parsedBody, true));
-        $response->getBody()->write(json_encode(['message' => 'Invalid data sent for update']));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
+    // Check if $userData is null or not an array
+    if ($userData === null || !is_array($userData)) {
+        $response->getBody()->write(json_encode([
+            'error' => 'Invalid data sent for update'
+        ]));
+        return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
     }
-
-    // Use the parsed body as user data
-    $userData = $parsedBody;
 
     // Initialize arrays to hold placeholders and values for the SQL query
     $placeholders = [];
@@ -349,8 +299,10 @@ class UserController
     // Check if any fields were provided for update
     if (empty($placeholders)) {
         // No fields provided for update, return an error
-        $response->getBody()->write(json_encode(['message' => 'No fields provided for update']));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
+        $response->getBody()->write(json_encode([
+            'error' => 'No fields provided for update'
+        ]));
+        return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
     }
 
     // Prepare the SQL query with dynamic placeholders
@@ -362,37 +314,58 @@ class UserController
     $stmt->execute($values);
 
     // Return a success message
-    $response->getBody()->write(json_encode(['message' => 'User updated successfully']));
-    return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+    $response->getBody()->write(json_encode([
+        'message' => 'User updated successfully'
+    ]));
+    return $response->withHeader('Content-Type', 'application/json');
 }
 
-    // Method to delete user based on username
-    public function deleteUserByUsername(Request $request, Response $response, $args): Response
-    {
-        // Get the user ID from the session
-        $userId = $_SESSION['userId'];
 
-        // Get the user status from the database
-        $stmt = $this->db->prepare('SELECT userStatus FROM users WHERE id =?');
-        $stmt->execute([$userId]);
-        $userStatus = $stmt->fetchColumn();
+// Method to delete user based on username
+public function deleteUserByUsername(Request $request, Response $response, $args)
+{
+    // Retrieve user ID from JWT token
+    $token = $request->getAttribute('token');
+    $userId = $token['id'];
 
-        // Check if the user has permission to delete other users
-        if ($userStatus != 2) {
-            $response->getBody()->write(json_encode(['message' => 'You do not have permission to delete other users']));
-            return $response->withHeader('Content-Type', 'application/json')->withStatus(403);
-        }
+    // Get the user status from the database
+    $stmt = $this->db->prepare('SELECT userStatus FROM users WHERE id = ?');
+    $stmt->execute([$userId]);
+    $userStatus = $stmt->fetchColumn();
 
-        // Get the username from the URL parameters
-        $username = $args['username'];
-
-        // Prepare and execute the SQL query to delete the user
-        $stmt = $this->db->prepare('DELETE FROM users WHERE username = ?');
-        $stmt->execute([$username]);
-
-        // Return a success message
-        $response->getBody()->write(json_encode(['message' => 'User deleted successfully']));
-        return $response->withHeader('Content-Type', 'application/json')->withStatus(200);
+    // Check if the user has permission to delete other users
+    if ($userStatus != 2) {
+        $response->getBody()->write(json_encode([
+            'error' => 'You do not have permission to delete other users'
+        ]));
+        return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
     }
+
+    // Get the username from the URL parameters
+    $username = $args['username'];
+
+    // Prepare and execute the SQL query to delete the user
+    $stmt = $this->db->prepare('DELETE FROM users WHERE username = ?');
+    $stmt->execute([$username]);
+
+    // Check if any rows were affected by the delete operation
+    $rowCount = $stmt->rowCount();
+    if ($rowCount == 0) {
+        // No user was deleted, return an error
+        $response->getBody()->write(json_encode([
+            'error' => 'User not found or could not be deleted'
+        ]));
+        return $response->withStatus(404)->withHeader('Content-Type', 'application/json');
+    }
+
+    // User deleted successfully, return a success message
+    $response->getBody()->write(json_encode([
+        'message' => 'User deleted successfully'
+    ]));
+    return $response->withHeader('Content-Type', 'application/json');
+}
+
+
+
 }
 ?>
