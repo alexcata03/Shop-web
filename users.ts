@@ -24,6 +24,7 @@ export const loginUser = async (email: string, password: string) => {
 
         const responseData = await response.json();
         console.log("Login successful, response data:", responseData);
+        localStorage.setItem('jwtToken', responseData.token);
         return responseData;
     } catch (error) {
         console.error("Failed to login:", error);
@@ -57,6 +58,7 @@ export const registerUser = async (email: string, password: string, firstName: s
 
         const responseData = await response.json();
         console.log("Registration successful, response data:", responseData);
+        localStorage.setItem('jwtToken', responseData.token);
         return responseData;
     } catch (error) {
         console.error("Failed to register:", error);
@@ -84,6 +86,52 @@ export const getUserByUsername = async (username: string) => {
         return userData;
     } catch (error) {
         console.error("Failed to fetch user data:", error);
+        throw error;
+    }
+};
+export const logoutUser = async () => {
+    try {
+        const response = await fetch("http://localhost:8000/logout", {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            console.error("Error response data:", errorData);
+            throw new Error(errorData.error || "Failed to logout");
+        }
+
+        const responseData = await response.json();
+        console.log("Logout successful, response data:", responseData);
+        return responseData;
+    } catch (error) {
+        console.error("Failed to logout:", error);
+        throw error;
+    }
+};
+
+export const updateUserById = async (userId: number, userData: any) => {
+    try {
+        const response = await fetch(`http://localhost:8000/users/${userId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(userData),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || "Failed to update user");
+        }
+
+        return response.json(); // Await only once to parse JSON data
+    } catch (error) {
+        console.error("Failed to update user:", error);
         throw error;
     }
 };
