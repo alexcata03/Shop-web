@@ -184,25 +184,15 @@ public function getAll(Request $request, Response $response, $args)
 
 public function getUserByUsername(Request $request, Response $response, $args)
 {
-    // Retrieve JWT token from cookies
-    $cookies = $request->getCookieParams();
-    $token = $cookies['jwt'] ?? null;
-    print_r('text',$token);
-    // Check if token is present
-    if (!$token) {
-        // Return an error response if token is missing
-        $responseBody = json_encode(['error' => 'JWT token is missing']);
-        return $response->withStatus(401)->withHeader('Content-Type', 'application/json')->getBody()->write($responseBody);
-    }
     try {
-        // Verify and decode JWT token
-        $decodedToken = JWT::decode($token, $this->secretKey);
-
-        // Extract user ID from decoded token
-        $userId = $decodedToken->user_id;
-
         // Get the username from the URL parameters
-        $username = $args['username'];
+        $username = $args['username'] ?? null;
+
+        if (!$username) {
+            $responseData = ['error' => 'Username is missing'];
+            $response->getBody()->write(json_encode($responseData));
+            return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+        }
 
         // Prepare and execute the SQL query to select user data by username
         $stmt = $this->db->prepare('SELECT * FROM users WHERE username = ?');
@@ -211,79 +201,46 @@ public function getUserByUsername(Request $request, Response $response, $args)
 
         // Check if user exists
         if (!$user) {
-            // User not found, return an error message
-            $responseBody = json_encode(['error' => 'User not found']);
-            return $response->withStatus(404)->withHeader('Content-Type', 'application/json')->getBody()->write($responseBody);
+            $responseData = ['error' => 'User not found'];
+            $response->getBody()->write(json_encode($responseData));
+            return $response->withStatus(404)->withHeader('Content-Type', 'application/json');
         }
 
-        // Include all required user data in the response
+        // Include all user data in the response
         $userData = [
             'username' => $user['username'],
-            'email' => $user['email'],
-            'phone' => $user['phone'],
-            'address' => $user['address'],
-            'firstName' => $user['first_name'],
-            'lastName' => $user['last_name'],
+            'email' => $user['email'] ?? null,
+            'phone' => $user['phone'] ?? null,
+            'address' => $user['address'] ?? null,
+            'firstName' => $user['firstName'] ?? null,
+            'lastName' => $user['lastName'] ?? null,
             // Add more fields if needed
         ];
 
-        // User found, return the user information as JSON
-        $responseBody = json_encode($userData);
-        return $response->withStatus(200)->withHeader('Content-Type', 'application/json')->getBody()->write($responseBody);
-    } catch (\Firebase\JWT\ExpiredException $e) {
-        // Return an error response if token is expired
-        $responseBody = json_encode(['error' => 'Token expired']);
-        return $response->withStatus(401)->withHeader('Content-Type', 'application/json')->getBody()->write($responseBody);
-    } catch (\Firebase\JWT\SignatureInvalidException $e) {
-        // Return an error response if token signature is invalid
-        $responseBody = json_encode(['error' => 'Invalid token']);
-        return $response->withStatus(401)->withHeader('Content-Type', 'application/json')->getBody()->write($responseBody);
+        // Return the user information as JSON
+        $response->getBody()->write(json_encode($userData));
+        return $response->withStatus(200)->withHeader('Content-Type', 'application/json');
+        
     } catch (\Exception $e) {
-        // Return a generic error response for other exceptions
-        $responseBody = json_encode(['error' => 'An error occurred']);
-        return $response->withStatus(500)->withHeader('Content-Type', 'application/json')->getBody()->write($responseBody);
+        $responseData = ['error' => 'An error occurred'];
+        $response->getBody()->write(json_encode($responseData));
+        return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
     }
 }
 
-
-
-
-
-// Method to update user information based on username
 public function updateUserById(Request $request, Response $response, $args)
 {
-    // Retrieve JWT token from headers
-    $token = $request->getAttribute('token');
-
-    // Check if token is present and valid
-    if (!$token || !isset($token['id'])) {
-        $response->getBody()->write(json_encode([
-            'error' => 'Unauthorized access'
-        ]));
-        return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
-    }
-
-    // Get the user ID from the JWT token
-    $userId = $token['id'];
-
-    // Get the user status from the database
-    $stmt = $this->db->prepare('SELECT userStatus FROM users WHERE id = ?');
-    $stmt->execute([$userId]);
-    $userStatus = $stmt->fetchColumn();
-
-    // Check if the user has permission to update other users
-    if ($userStatus != 2) {
-        $response->getBody()->write(json_encode([
-            'error' => 'You do not have permission to update other users'
-        ]));
-        return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
-    }
-
     // Get the user ID from the URL parameters
     $id = $args['id'];
 
+    // Log the received user ID
+    error_log("User ID: $id");
+
     // Retrieve updated user data from the request body
     $userData = $request->getParsedBody();
+
+    // Log the received user data
+    error_log("Received user data: " . json_encode($userData));
 
     // Check if $userData is null or not an array
     if ($userData === null || !is_array($userData)) {
@@ -304,7 +261,7 @@ public function updateUserById(Request $request, Response $response, $args)
             // Add the field to the placeholders array
             $placeholders[] = "$field = ?";
             // Add the value to the values array
-            $values[] = $field === 'password' ? password_hash($value, PASSWORD_BCRYPT) : $value;
+            $values[] = $value;
         }
     }
 
@@ -381,4 +338,7 @@ public function deleteUserByUsername(Request $request, Response $response, $args
 
 
 }
+
+
+
 ?>
